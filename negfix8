@@ -1,5 +1,5 @@
 #!/bin/bash
-# negfix8 ver 1.3
+# negfix8 ver 1.4b
 # GNU General Public License v2
 # (C) 2011-2013 JaZ99 - http://www.flickr.com/photos/jaz99/
 
@@ -24,7 +24,14 @@ CS=""
 BINNING=""
 PROF_NAME=""
 SEPARATE=""
+NORM=""
+AUTOLEVEL=""
+UNSHARP=""
+TRIM=""
+IR=0
 MIRROR=""
+ROTATE=""
+MASKING_CMD=""
 MAGICK_TEMPORARY_PATH="/var/tmp" # ImageMagick's temporary directory
 
 # Uncomment below, if you want 20% saturation boost
@@ -62,13 +69,19 @@ PROF_NAME="-"
 
 while [ $# -gt 0 ]; do
     case $1 in
-	-m)	MIRROR="-flop"; shift;;
-	-s)	SEPARATE="-channel $2 -separate"; shift; shift;;
+	-m)		MIRROR="-flop"; shift;;
+	-o)     ROTATE="-rotate $2"; shift; shift;;
+	-s)		SEPARATE="-channel $2 -separate"; shift; shift;;
 	-cs)	CS="-contrast-stretch 0"; shift;;
-	-r)	BINNING=$2; shift; shift;;
+	-n)		NORM="-normalize"; shift;;
+	-al)	AUTOLEVEL="-auto-level"; shift;;
+	-usm)	UNSHARP="-unsharp 1.5x1.2+1.0+0.01"; shift;;
+	-r)		BINNING=$2; shift; shift;;
+	-t)		TRIM="-bordercolor black -border 1x1 -fuzz $20% -trim -shave $20x$20"; shift; shift;;
 	-g)     GAMMA=$2; shift; shift;;
+	-ir)	IR=1; shift;;
 	-c)     PROF_NAME="$2"
-		shift; shift;;
+shift; shift;;
 	-u)     MAKE_PROF=0
                 PROF_NAME="$2"; 
 		if [ ! -r "$PROF_DIR"/"$PROF_NAME" ]; then
@@ -77,25 +90,31 @@ while [ $# -gt 0 ]; do
 		fi
 		shift; shift;;
 	-h|-?)	cat << EOF
-Usage: negfix8 [-m] [-g G] [-cs] [-r {2|3|4}] [-u frame_prof] [-s {R|G|B}] input_file [output_file]
-       negfix8 [-m] [-g G] [-cs] [-r {2|3|4}] [-u frame_prof] [-s {R|G|B}] input_file [input_file...]
+Usage: negfix8 [-m] [-g G] [-ir] [-cs] [-r {2|3|4}] [-t T={1..9}] [-o O={-180..180}] [-u frame_prof] [-s {R|G|B}] input_file [output_file]
+       negfix8 [-m] [-g G] [-ir] [-cs] [-r {2|3|4}] [-t T={1..9}] [-o O={-180..180}] [-u frame_prof] [-s {R|G|B}] input_file [input_file...]
        negfix8 -c frame_prof input_file [input_file...]
 
 where: -g    - set image gamma to specified value (default: $GAMMA)
        -cs   - perform contrast stretch operation
+	   -n	 - perform normalization on image
+	   -al	 - perform auto levels on image
        -r    - perform X-fold image size reduction, with binning*
+	   -t    - trim image by a factor of T (in most cases 1 is sufficient)
        -c    - create frame profile from input file or files, then exit
        -u    - use created frame profile
        -s    - separate given channel to make B&W image
+	   -o    - rotate image by O degrees (use negative value for counterclockwise)
        -m    - mirror image horizontally
+	   -ir	 - create an alpha channel from infrared channel (only HDRi files)
+	   -usm  - perfrom unsharp masking
 
 * Binning: http://www.imagemagick.org/Usage/photos/binning/sample3.html
 
 Examples:
 	negfix8 -c test_profile scan001.tif
 	negfix8 -u test_profile -cs -r 3 -m scan002.tif scan002.jpg
-	negfix8 -cs scan003.tif
-	negfig8 -s G scan004.tif
+	negfix8 -cs -o 90 -t 1 scan003.tif
+	negfig8 -ir -s G scan004.tif
 	negfix8 -c Portra400 roll123/*.tif
 	negfix8 -u Portra400 -cs roll123/*.tif
 
@@ -160,12 +179,22 @@ for i in "${WORKLIST[@]}"; do
     
     F2=`basename "$i"`
     F=_t_$F2
-    [ -z "$OUTF" ] && OUTF=P_$F2
+	M=_i_$F2
+	[ -z "$OUTF" ] && OUTF=P_$F2
+
 
     # Create a copy with unknown TIF tags and color profiles stripped
     # and applied user's profiles, if any
-    convert $MEM "$i[0]" +profile "icc,icm" "$F" 2> /dev/null || { echo "Not enough disk space."; exit 98; }
 
+	
+	convert $MEM "$i[0]" +profile "icc,icm" "$F" 2> /dev/null || { echo "Not enough disk space."; exit 98; }
+
+   	if [ $IR -eq 1 ]; then
+		convert $MEM "$i[2]" -threshold 80% "$M" 2> /dev/null || { echo "Not enough disk space."; exit 98; }
+		MASKING_CMD="-alpha off $M -compose CopyOpacity -composite -channel RGBA"
+
+	fi
+	
     if [ ! -z $BINNING ]; then
         set -- `convert $MEM "$F" -format "%[fx: $BINNING*floor(w/$BINNING)] %[fx: $BINNING*floor(h/$BINNING)] %[fx: floor(w/$BINNING)] %[fx: floor(h/$BINNING)]" info:`
         BINNING_CMD="-crop ${1}x${2}+0+0 +repage -scale ${3}x${4}"
@@ -183,40 +212,52 @@ for i in "${WORKLIST[@]}"; do
     if [ "$5" = "1" -a "$6" = "1" -o ! -z "$SEPARATE" ]; then
         if [ $HAS_POLY -eq 1 ]; then
             echo -n "Writing $OUTF (B&W).... "
-            convert $MEM "${F}" $CSPACE $SEPARATE $BINNING_CMD $MIRROR \
+            convert $MEM "${F}" $CSPACE $SEPARATE $MASKING_CMD $BINNING_CMD $ROTATE $MIRROR \
                 $SAFE -poly "$1,-1" -gamma $GAMMA -evaluate Subtract $4 \
-                $CS -comment "$COMMENT" $ZIP $SEPARATE "$OUTF"
+                $TRIM $CS $NORM $AUTOLEVEL $UNSHARP -comment "$COMMENT" $ZIP $SEPARATE "$OUTF"
             EX=$?
         else
             echo -n "Writing $OUTF (B&W)... "
-            convert $MEM "${F}" $CSPACE $SEPARATE $BINNING_CMD $MIRROR \
+            convert $MEM "${F}" $CSPACE $SEPARATE $MASKING_CMD $BINNING_CMD $ROTATE $MIRROR \
                 $SAFE -fx "$1/u" -gamma $GAMMA -evaluate Subtract $4 \
-                $CS -comment "$COMMENT" $ZIP $SEPARATE "$OUTF"
+                $TRIM $CS $NORM $AUTOLEVEL $UNSHARP -comment "$COMMENT" $ZIP $SEPARATE "$OUTF"
             EX=$?
         fi
     else
         if [ $HAS_POLY -eq 1 ]; then
-            echo -n "Writing $OUTF.... "
-            convert $MEM "${F}" $CSPACE $BINNING_CMD $MIRROR $SAFE -separate -delete 3-5 \
-                \( -clone 0 -poly "$1,-1" \) -swap 0,3 -delete 3 \
-                \( -clone 1 -poly "$2,-1" -gamma $5 \) -swap 1,3 -delete 3 \
-                \( -clone 2 -poly "$3,-1" -gamma $6 \) -swap 2,3 -delete 3 \
-                -combine -type TrueColor +channel -gamma $GAMMA \
-                -evaluate Subtract $4 $CS $SATURATION -comment "$COMMENT" $ZIP "$OUTF"
+			echo -n "Writing $OUTF.... "
+            if [ $IR -eq 1 ]; then
+            convert $MEM "${F}" $CSPACE $MASKING_CMD $BINNING_CMD $ROTATE $MIRROR $SAFE -separate -delete 4-6 \
+                \( -clone 0 -poly "$1,-1" \) -swap 0,4 -delete 4 \
+                \( -clone 1 -poly "$2,-1" -gamma $5 \) -swap 1,4 -delete 4 \
+                \( -clone 2 -poly "$3,-1" -gamma $6 \) -swap 2,4 -delete 4 \
+				\( -clone 3 \) -swap 3,4 -delete 4  \
+                -combine -type TrueColorAlpha +channel -gamma $GAMMA \
+                -evaluate Subtract $4 $TRIM $CS $NORM $AUTOLEVEL $SATURATION $UNSHARP -comment "$COMMENT" $ZIP "$OUTF"
+		else
+	            convert $MEM "${F}" $CSPACE $BINNING_CMD $ROTATE $MIRROR $SAFE -separate -delete 3-5 \
+	                \( -clone 0 -poly "$1,-1" \) -swap 0,3 -delete 3 \
+	                \( -clone 1 -poly "$2,-1" -gamma $5 \) -swap 1,3 -delete 3 \
+	                \( -clone 2 -poly "$3,-1" -gamma $6 \) -swap 2,3 -delete 3 \
+	                -combine -type TrueColor +channel -gamma $GAMMA \
+		                -evaluate Subtract $4 $TRIM $CS $NORM $AUTOLEVEL $SATURATION $UNSHARP -comment "$COMMENT" $ZIP "$OUTF"
+
+		fi
+		
             EX=$?
         else
             echo -n "Writing $OUTF... "
-            convert $MEM "${F}" $CSPACE $BINNING_CMD $MIRROR $SAFE \
+            convert $MEM "${F}" $CSPACE $MASKING_CMD $BINNING_CMD $ROTATE $MIRROR $SAFE \
                 -channel R -fx "$1/u" \
                 -channel G -fx "$2/u" -gamma $5 \
                 -channel B -fx "$3/u" -gamma $6 \
                 +channel -gamma $GAMMA -evaluate Subtract $4 \
-                $CS $SATURATION -comment "$COMMENT" $ZIP "$OUTF"
+                $TRIM $CS $NORM $AUTOLEVEL $SATURATION $UNSHARP -comment "$COMMENT" $ZIP "$OUTF"
             EX=$?
         fi
     fi 
 
-    rm -f "$F"
+    rm -f "$F" "$M"
 
     if [ $EX -eq 0 ]; then 
       echo "Done."
