@@ -2,6 +2,7 @@
 # negfix8 ver 1.4b
 # GNU General Public License v2
 # (C) 2011-2013 JaZ99 - http://www.flickr.com/photos/jaz99/
+# (C) 2014 mszargar
 
 # This little script converts negative (scanned as 16-bit _linear_
 # positive, i.e. gamma=1.0), either C-41 color negative or B&W negative,  
